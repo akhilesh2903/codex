@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "D:\e-commerce\dr_screening_xai\test_gradcam.py", line 3, in <module>
+    from src.explainability.gradcam import XAI_Visualizer
+  File "D:\e-commerce\dr_screening_xai\src\explainability\gradcam.py", line 4, in <module>
+    from pytorch_grad_cam import GradCAM
+ImportError: cannot import name 'GradCAM' from 'pytorch_grad_cam' (D:\e-commerce\dr_screening_xai\.venv\Lib\site-packages\pytorch_grad_cam\__init__.py)

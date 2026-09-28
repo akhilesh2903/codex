@@ -1,0 +1,25 @@
+dataset:
+  name: aptos
+  root: ./data/raw/aptos
+
+image:
+  size: 256
+
+training:
+  batch_size: 16
+  epochs: 1
+  learning_rate: 0.0001
+  seed: 42
+
+quality:
+  threshold: 0.60
+
+classification:
+  model: efficientnet_b0
+  num_classes: 5
+
+referable:
+  minimum_grade: 2
+
+deployment:
+  device: auto
