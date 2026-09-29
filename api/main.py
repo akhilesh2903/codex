@@ -12,6 +12,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import torch
 
+# Prevent PyTorch from allocating 8+ thread buffers based on the host OS
+# which instantly causes OOM on strict 512MB instances
+torch.set_num_threads(1)
+
 import api.database as _db_module
 from api.database import verify_connection
 from src.quality.assessment import QualityAssessor
