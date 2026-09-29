@@ -15,6 +15,7 @@ import torch
 # Prevent PyTorch from allocating 8+ thread buffers based on the host OS
 # which instantly causes OOM on strict 512MB instances
 torch.set_num_threads(1)
+cv2.setNumThreads(1)
 
 import api.database as _db_module
 from api.database import verify_connection
@@ -283,7 +284,8 @@ async def analyze_image(
     device = get_device()
 
     if model is not None:
-        val_transform = get_transforms(image_size=512, mode="val")
+        # Native EfficentNet b0 resolution is 224x224
+        val_transform = get_transforms(image_size=224, mode="val")
         transformed = val_transform(image=enhanced)
         tensor_img = transformed["image"].unsqueeze(0).to(device)
 
@@ -294,6 +296,11 @@ async def analyze_image(
             pred_grade = int(pred.item())
             confidence = float(conf.item())
             all_probs = probs[0].tolist()
+            
+        # Free tensor aggressively before gradcam backprop
+        del tensor_img
+        del outputs
+        del probs
     else:
         # Demo mode — clearly labelled as such
         pred_grade = 2
@@ -312,9 +319,9 @@ async def analyze_image(
         xai = get_xai_visualizer()
         if xai is not None:
             try:
-                # Shrink resolution for GradCAM to 256x256 to save memory (prevent OOM during backprop)
-                img_resized = cv2.resize(enhanced, (256, 256))
-                val_transform = get_transforms(image_size=256, mode="val")
+                # Shrink resolution for GradCAM to 224x224 for minimal memory footprint
+                img_resized = cv2.resize(enhanced, (224, 224))
+                val_transform = get_transforms(image_size=224, mode="val")
                 tensor_for_cam = val_transform(image=enhanced)["image"].unsqueeze(0).to(device)
 
                 gradcam_path = f"outputs/gradcam/{image_id}.png"
@@ -324,6 +331,7 @@ async def analyze_image(
                     target_category=None,
                     output_path=gradcam_path
                 )
+                del tensor_for_cam
                 import gc; gc.collect() # Force cleanup of heavy gradients
                 if visualization is not None:
                     gradcam_url = f"/outputs/gradcam/{image_id}.png"
