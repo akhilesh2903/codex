@@ -1,17 +1,19 @@
 import time
 import os
 import io
+import warnings
 import cv2
 import numpy as np
 from PIL import Image
-from fastapi import FastAPI, File, UploadFile, Depends, HTTPException
+from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Form
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import torch
 
-from api.database import SessionLocal, Analysis
+import api.database as _db_module
+from api.database import verify_connection
 from src.quality.assessment import QualityAssessor
 from src.preprocessing.enhancement import ImageEnhancer
 from src.segmentation.lesion_analysis import LesionAnalyzer
@@ -96,11 +98,19 @@ app.mount("/outputs", StaticFiles(directory="outputs"), name="outputs")
 
 # ── Database dependency ──────────────────────────────────────────────────────
 def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+    """Yield db, attempting a lazy reconnect if the initial connection failed."""
+    # Use the live module-level reference (may be updated by verify_connection)
+    current_db = _db_module.db
+    if current_db is None:
+        # Attempt a reconnect once
+        verify_connection()
+        current_db = _db_module.db
+    if current_db is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Database unavailable. Check MongoDB Atlas IP whitelist (add 0.0.0.0/0) and credentials."
+        )
+    yield current_db
 
 
 # ── Pydantic models ──────────────────────────────────────────────────────────
@@ -109,13 +119,39 @@ class ReviewUpdate(BaseModel):
     decision: str
     comment: str
 
+class PatientCreate(BaseModel):
+    name: str
+    phone: str
 
 # ── Startup: pre-load model ──────────────────────────────────────────────────
 @app.on_event("startup")
 async def startup_event():
-    print("[INFO] Starting DR-Screening-XAI API...")
-    get_classifier()   # Pre-warm model
-    get_xai_visualizer()
+    print("\n" + "=" * 60)
+    print("  DR-Screening-XAI — Starting up...")
+    print("=" * 60)
+
+    # MongoDB connection
+    print("[DB]    Connecting to MongoDB Atlas...")
+    if verify_connection():
+        print("[DB]    ✅ MongoDB Atlas connected successfully.")
+    else:
+        print("[DB]    ⚠️  MongoDB connection failed. Retries may occur on first request.")
+
+    # Model loading
+    print("[MODEL] Loading EfficientNet-B0 classifier...")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")   # suppress torchvision pretrained deprecation
+        get_classifier()
+        get_xai_visualizer()
+
+    model_loaded = _classifier is not None
+    if model_loaded:
+        print(f"[MODEL] ✅ EfficientNet-B0 loaded on {get_device()}.")
+    else:
+        print(f"[MODEL] ⚠️  Model not found at '{MODEL_PATH}'. Running in DEMO mode.")
+
+    print("[API]   ✅ All endpoints ready.")
+    print("=" * 60 + "\n")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -155,10 +191,40 @@ async def upload_image(file: UploadFile = File(...)):
     return {"image_id": image_id, "upload_path": save_path, "status": "uploaded"}
 
 
+@app.post("/api/register")
+def register_patient(patient: PatientCreate):
+    """Register a patient profile. Works with or without DB — returns a local ID if DB is down."""
+    patient_id = f"pat_{int(time.time() * 1000)}"
+    current_db = _db_module.db
+    if current_db is None:
+        verify_connection()
+        current_db = _db_module.db
+    if current_db is not None:
+        try:
+            record = {
+                "patient_id": patient_id,
+                "name": patient.name,
+                "phone": patient.phone,
+                "created_at": time.time()
+            }
+            current_db.patients.insert_one(record)
+        except Exception as e:
+            print(f"[WARNING] DB write failed for register: {e}")
+            # Return success anyway — patient_id is still usable for the session
+    return {"patient_id": patient_id, "name": patient.name, "phone": patient.phone, "db_saved": current_db is not None}
+
 @app.post("/api/analyze")
-async def analyze_image(file: UploadFile = File(...), db=Depends(get_db)):
+async def analyze_image(
+    file: UploadFile = File(...),
+    patientId: str = Form("")):
     """Full end-to-end analysis: quality → enhance → lesions → classify → GradCAM → PDF."""
+    # Resolve db reference lazily (survive startup DB failure)
+    current_db = _db_module.db
+    if current_db is None:
+        verify_connection()
+        current_db = _db_module.db
     start_time = time.time()
+
 
     # ── Read & validate image ────────────────────────────────────────────────
     contents = await file.read()
@@ -185,7 +251,7 @@ async def analyze_image(file: UploadFile = File(...), db=Depends(get_db)):
     if quality["recapture_required"]:
         return {
             "image_id": image_id,
-            "error": "Image quality insufficient for reliable screening. Please recapture the fundus image.",
+            "error": quality.get("error", "Image quality insufficient for reliable screening. Please recapture the fundus image."),
             "quality": quality
         }
 
@@ -195,11 +261,11 @@ async def analyze_image(file: UploadFile = File(...), db=Depends(get_db)):
 
     # ── Lesion Analysis (OpenCV heuristic) ───────────────────────────────────
     analyzer = LesionAnalyzer()
-    lesions = analyzer.analyze(enhanced)
+    lesions = analyzer.analyze(enhanced)  # detect on enhanced (better contrast)
 
-    # Generate lesion overlay image
+    # Generate lesion overlay on the ORIGINAL image (not enhanced) so it's not dark
     lesion_overlay_path = f"outputs/annotated/{image_id}_lesions.png"
-    analyzer.generate_lesion_overlay(enhanced, lesions, output_path=lesion_overlay_path)
+    analyzer.generate_lesion_overlay(img_rgb, lesions, output_path=lesion_overlay_path)
     lesion_overlay_url = f"/outputs/annotated/{image_id}_lesions.png"
 
     # ── DR Classification ────────────────────────────────────────────────────
@@ -230,6 +296,7 @@ async def analyze_image(file: UploadFile = File(...), db=Depends(get_db)):
     # ── GradCAM Explainability ───────────────────────────────────────────────
     gradcam_url = None
     overlay_url = None
+    gradcam_path = None  # initialize so PDF generator always has this variable
 
     if model is not None:
         xai = get_xai_visualizer()
@@ -264,25 +331,41 @@ async def analyze_image(file: UploadFile = File(...), db=Depends(get_db)):
 
     processing_time = (time.time() - start_time) * 1000
 
+    # ── Fetch Patient Details (if provided) ──────────────────────────────────
+    pat_name = ""
+    pat_phone = ""
+    if patientId and current_db is not None:
+        pat_record = current_db.patients.find_one({"patient_id": patientId})
+        if pat_record:
+            pat_name = pat_record.get("name", "")
+            pat_phone = pat_record.get("phone", "")
+
     # ── Persist to DB ────────────────────────────────────────────────────────
-    try:
-        record = Analysis(
-            image_id=image_id,
-            quality_score=quality["quality_score"],
-            quality_status=quality["status"],
-            dr_grade=pred_grade,
-            dr_label=DR_LABELS[pred_grade],
-            confidence=confidence,
-            referable=(pred_grade >= 2),
-            processing_time_ms=processing_time
-        )
-        db.add(record)
-        db.commit()
-    except Exception as e:
-        print(f"[WARNING] DB write failed: {e}")
+    if current_db is not None:
+        try:
+            record = {
+                "image_id": image_id,
+                "patient_id": patientId,
+                "patient_name": pat_name,
+                "phone_number": pat_phone,
+                "quality_score": quality["quality_score"],
+                "quality_status": quality["status"],
+                "dr_grade": pred_grade,
+                "dr_label": DR_LABELS[pred_grade],
+                "confidence": confidence,
+                "referable": (pred_grade >= 2),
+                "processing_time_ms": processing_time
+            }
+            current_db.analyses.insert_one(record)
+        except Exception as e:
+            print(f"[WARNING] DB write failed: {e}")
+    else:
+        print("[INFO] DB unavailable — skipping analysis persistence.")
 
     result = {
         "image_id": image_id,
+        "patient_name": pat_name,
+        "phone_number": pat_phone,
         "quality": quality,
         "prediction": {
             "grade": pred_grade,
@@ -300,12 +383,13 @@ async def analyze_image(file: UploadFile = File(...), db=Depends(get_db)):
     # ── Generate PDF Report ──────────────────────────────────────────────────
     try:
         reporter = ReportGenerator()
-        gradcam_file = gradcam_path if gradcam_url else None
         pdf_path = reporter.generate(
             result_json=result,
             image_path=original_path,
-            gradcam_path=gradcam_file,
-            overlay_path=lesion_overlay_path if os.path.exists(lesion_overlay_path) else None
+            gradcam_path=gradcam_path,
+            overlay_path=lesion_overlay_path if os.path.exists(lesion_overlay_path) else None,
+            patient_name=pat_name,
+            phone_number=pat_phone
         )
         result["report_url"] = f"/outputs/reports/{os.path.basename(pdf_path)}"
     except Exception as e:
@@ -318,21 +402,23 @@ async def analyze_image(file: UploadFile = File(...), db=Depends(get_db)):
 @app.get("/api/result/{image_id}")
 def get_result(image_id: str, db=Depends(get_db)):
     """Retrieve a previously stored analysis result from the database."""
-    record = db.query(Analysis).filter(Analysis.image_id == image_id).first()
+    record = db.analyses.find_one({"image_id": image_id})
     if record is None:
         raise HTTPException(status_code=404, detail=f"No result found for image_id: {image_id}")
 
     return {
-        "image_id": record.image_id,
-        "quality_score": record.quality_score,
-        "quality_status": record.quality_status,
+        "image_id": record["image_id"],
+        "patient_name": record.get("patient_name", ""),
+        "phone_number": record.get("phone_number", ""),
+        "quality_score": record["quality_score"],
+        "quality_status": record["quality_status"],
         "prediction": {
-            "grade": record.dr_grade,
-            "label": record.dr_label,
-            "confidence": record.confidence,
-            "referable": record.referable,
+            "grade": record["dr_grade"],
+            "label": record["dr_label"],
+            "confidence": record["confidence"],
+            "referable": record["referable"],
         },
-        "processing_time_ms": record.processing_time_ms,
+        "processing_time_ms": record["processing_time_ms"],
         "report_url": f"/outputs/reports/report_{image_id}.pdf"
         if os.path.exists(f"outputs/reports/report_{image_id}.pdf") else None,
     }
@@ -369,12 +455,10 @@ async def quality_check(file: UploadFile = File(...)):
 @app.post("/api/review")
 def submit_review(review: ReviewUpdate, db=Depends(get_db)):
     """Submit a clinician review decision for a given analysis."""
-    from api.database import Review
-    new_review = Review(
-        analysis_id=review.analysis_id,
-        decision=review.decision,
-        comment=review.comment
-    )
-    db.add(new_review)
-    db.commit()
+    new_review = {
+        "analysis_id": review.analysis_id,
+        "decision": review.decision,
+        "comment": review.comment
+    }
+    db.reviews.insert_one(new_review)
     return {"status": "Review saved", "analysis_id": review.analysis_id}

@@ -14,7 +14,8 @@ PyYAML
 fastapi
 uvicorn
 pydantic
-SQLAlchemy
+pymongo
+certifi
 reportlab
 grad-cam
 captum

@@ -13,7 +13,7 @@ class ReportGenerator:
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
 
-    def generate(self, result_json, image_path=None, gradcam_path=None, overlay_path=None):
+    def generate(self, result_json, image_path=None, gradcam_path=None, overlay_path=None, patient_name="", phone_number=""):
         image_id = result_json.get("image_id", "UNKNOWN")
         out_pdf = os.path.join(self.output_dir, f"report_{image_id}.pdf")
 
@@ -40,6 +40,8 @@ class ReportGenerator:
 
         # ── Metadata ────────────────────────────────────────────────────────────
         meta_data = [
+            ["Patient Name", patient_name or "N/A"],
+            ["Phone Number", phone_number or "N/A"],
             ["Image ID", str(image_id)],
             ["Report Generated", time.strftime("%Y-%m-%d %H:%M:%S")],
             ["Model Version", "EfficientNet-B0 v1.0"],

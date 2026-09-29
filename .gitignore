@@ -1,4 +1,5 @@
 .venv/
+venv/
 __pycache__/
 .pytest_cache/
 data/
@@ -7,3 +8,4 @@ models/
 *.pt
 *.pth
 .env
+tests/aptos*

@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { translations, languageOptions } from './translations';
 import './App.css';
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 const GRADE_COLORS = {
   0: '#22c55e',   // green
@@ -69,8 +70,32 @@ function ImagePanel({ title, src, fallback }) {
 }
 
 function App() {
+  // ── Theme & Language ────────────────────────────────────────────────────────
+  const [theme, setTheme] = useState(() => localStorage.getItem('dr-theme') || 'dark');
+  const [lang, setLang] = useState(() => localStorage.getItem('dr-lang') || 'en');
+  const t = translations[lang] || translations['en'];
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('dr-theme', theme);
+  }, [theme]);
+
+  useEffect(() => {
+    localStorage.setItem('dr-lang', lang);
+  }, [lang]);
+
+  const toggleTheme = () => setTheme(prev => prev === 'dark' ? 'light' : 'dark');
+  // toggleLang is removed because we now use a dropdown.
+
+  // ── App state ────────────────────────────────────────────────────
+  const [isRegistered, setIsRegistered] = useState(false);
+  const [patientId, setPatientId] = useState(null);
+  const [isRegistering, setIsRegistering] = useState(false);
+  
   const [fileObj, setFileObj] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
+  const [patientName, setPatientName] = useState('');
+  const [phoneNumber, setPhoneNumber] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
   const [results, setResults] = useState(null);
   const [error, setError] = useState(null);
@@ -99,6 +124,39 @@ function App() {
     }
   };
 
+  const handleRegister = async (e) => {
+    e.preventDefault();
+    if (!patientName.trim()) {
+      setError("Please enter a patient name");
+      return;
+    }
+    
+    // Phone number validation: strictly 10 digits
+    const phoneRegex = /^\d{10}$/;
+    if (!phoneRegex.test(phoneNumber.replace(/\D/g, ''))) {
+      setError("Enter a valid 10 digit number");
+      return;
+    }
+
+    setIsRegistering(true);
+    setError(null);
+    try {
+      const resp = await fetch(`${API_BASE}/api/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: patientName, phone: phoneNumber })
+      });
+      if (!resp.ok) throw new Error("Registration failed");
+      const data = await resp.json();
+      setPatientId(data.patient_id);
+      setIsRegistered(true);
+    } catch(err) {
+      setError(err.message);
+    } finally {
+      setIsRegistering(false);
+    }
+  };
+
   const analyzeImage = async () => {
     if (!fileObj) return;
     setAnalyzing(true);
@@ -106,6 +164,7 @@ function App() {
     try {
       const formData = new FormData();
       formData.append('file', fileObj);
+      if (patientId) formData.append('patientId', patientId);
       const response = await fetch(`${API_BASE}/api/analyze`, { method: 'POST', body: formData });
       if (!response.ok) {
         const errData = await response.json();
@@ -141,6 +200,10 @@ function App() {
   const reset = () => {
     setFileObj(null);
     setPreviewUrl(null);
+    setPatientName('');
+    setPhoneNumber('');
+    setPatientId(null);
+    setIsRegistered(false);
     setResults(null);
     setError(null);
     setReviewSubmitted(false);
@@ -152,43 +215,72 @@ function App() {
 
   return (
     <div className="dashboard">
+      {/* ─── Top Right Controls ─── */}
+      <div style={{ position: 'fixed', top: '1rem', right: '1rem', zIndex: 999, display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+        <select 
+          className="theme-toggle" 
+          style={{ position: 'static', cursor: 'pointer', paddingRight: '0.5rem', appearance: 'auto' }} 
+          value={lang} 
+          onChange={(e) => setLang(e.target.value)}
+          title="Select language"
+        >
+          {languageOptions.map(opt => (
+            <option key={opt.code} value={opt.code} style={{ background: '#1e293b', color: '#f8fafc' }}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+        <button className="theme-toggle" style={{ position: 'static' }} onClick={toggleTheme} title="Toggle theme">
+          {theme === 'dark' ? '☀️ Light Mode' : '🌙 Dark Mode'}
+        </button>
+      </div>
+
       <header className="header">
-        <h1>DR-Screening-XAI Portal</h1>
+        <h1>{t.title}</h1>
         <p style={{ color: 'var(--text-muted)' }}>
-          Upload a fundus image for explainable diabetic retinopathy screening
+          {t.subtitle}
         </p>
       </header>
 
-      {/* ─── Upload Panel ─── */}
-      {!results && !analyzing && (
-        <div className="glass-panel" style={{ maxWidth: '600px', margin: '0 auto' }}>
-          <label
-            className="upload-area"
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={handleDrop}
-          >
-            <svg width="48" height="48" fill="none" stroke="var(--text-muted)" viewBox="0 0 24 24" style={{ marginBottom: '1rem' }}>
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-            </svg>
-            <h3>Click or drag image to upload</h3>
-            <p style={{ color: 'var(--text-muted)' }}>Supports JPG, PNG (High resolution recommended)</p>
-            <input type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFileChange} />
-          </label>
-
-          {previewUrl && (
-            <div style={{ textAlign: 'center', marginTop: '2rem' }}>
-              <img src={previewUrl} alt="Preview" style={{ maxHeight: '220px', borderRadius: '10px', marginBottom: '1rem', border: '1px solid rgba(255,255,255,0.1)' }} />
-              <div>
-                <button className="btn" onClick={analyzeImage}>Analyze Scan</button>
+      {/* ─── Registration Panel ─── */}
+      {!isRegistered && !analyzing && (
+        <div className="glass-panel" style={{ maxWidth: '400px', margin: '0 auto' }}>
+          <h2 style={{ textAlign: 'center', marginBottom: '1.5rem' }}>{t.registerBtn}</h2>
+          <form onSubmit={handleRegister} style={{ display: 'flex', flexDirection: 'column', gap: '1.2rem' }}>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.9rem', marginBottom: '0.5rem', color: 'var(--text-muted)' }}>{t.patientName}</label>
+              <input 
+                type="text" 
+                required
+                placeholder="e.g. John Doe" 
+                value={patientName} 
+                onChange={(e) => setPatientName(e.target.value)}
+                className="form-input" 
+                disabled={isRegistering}
+              />
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.9rem', marginBottom: '0.5rem', color: 'var(--text-muted)' }}>{t.phoneNumber}</label>
+              <input 
+                type="tel" 
+                placeholder="e.g. 9876543210" 
+                value={phoneNumber} 
+                onChange={(e) => setPhoneNumber(e.target.value)}
+                className="form-input" 
+                disabled={isRegistering}
+              />
+            </div>
+            
+            {error && (
+              <div style={{ padding: '0.75rem', background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.4)', borderRadius: '8px', color: '#fca5a5', fontSize: '0.85rem' }}>
+                ⚠ {error}
               </div>
-            </div>
-          )}
+            )}
 
-          {error && (
-            <div style={{ marginTop: '1rem', padding: '0.75rem 1rem', background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.4)', borderRadius: '8px', color: '#fca5a5', fontSize: '0.9rem' }}>
-              ⚠ {error}
-            </div>
-          )}
+            <button type="submit" className="btn" style={{ width: '100%', marginTop: '0.5rem' }} disabled={isRegistering}>
+              {isRegistering ? "..." : t.registerBtn}
+            </button>
+          </form>
         </div>
       )}
 
@@ -203,23 +295,74 @@ function App() {
         </div>
       )}
 
+      {/* ─── Upload Panel ─── */}
+      {isRegistered && !results && !analyzing && (
+        <div className="glass-panel" style={{ maxWidth: '600px', margin: '0 auto' }}>
+          {/* Active Patient Header */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', paddingBottom: '1rem', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+            <div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.2rem' }}>Active Patient</div>
+              <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#22c55e' }}>{patientName}</div>
+              {phoneNumber && <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>📞 {phoneNumber}</div>}
+            </div>
+            <button className="btn" style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.2)', padding: '4px 14px', fontSize: '0.8rem', marginTop: '0' }} onClick={reset}>
+              {t.newScreening}
+            </button>
+          </div>
+
+          {/* Drag-and-drop upload area */}
+          <label className="upload-area" onDragOver={(e) => e.preventDefault()} onDrop={handleDrop}>
+            <svg width="48" height="48" fill="none" stroke="var(--text-muted)" viewBox="0 0 24 24" style={{ marginBottom: '1rem' }}>
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+            </svg>
+            <h3>{t.uploadPrompt}</h3>
+            <p style={{ color: 'var(--text-muted)', marginTop: '0.4rem' }}>{t.uploadOr}</p>
+            <input type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFileChange} />
+          </label>
+
+          {previewUrl && (
+            <div style={{ textAlign: 'center', marginTop: '2rem' }}>
+              <img src={previewUrl} alt="Preview" style={{ maxHeight: '240px', borderRadius: '10px', marginBottom: '1.2rem', border: '1px solid rgba(255,255,255,0.1)' }} />
+              <div>
+                <button className="btn" onClick={analyzeImage} style={{ padding: '0.75rem 2.5rem', fontSize: '1rem' }}>
+                  {t.analyzeScan}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {error && (
+            <div style={{ marginTop: '1rem', padding: '0.75rem 1rem', background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.4)', borderRadius: '8px', color: '#fca5a5', fontSize: '0.9rem' }}>
+              ⚠ {error}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ─── Results Panel ─── */}
       {results && (
         <div>
           {/* Header bar */}
-          <div className="glass-panel" style={{ marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+          <div className="glass-panel" style={{ marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
             <div>
-              <h2 style={{ margin: '0 0 0.5rem 0' }}>Clinical Findings</h2>
+              <h2 style={{ margin: '0 0 0.25rem 0' }}>{t.clinicalFindings}</h2>
+              {/* Patient Info Row */}
+              {(patientName || phoneNumber) && (
+                <div style={{ display: 'flex', gap: '1rem', marginBottom: '0.75rem', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+                  <span>👤 <strong style={{ color: 'var(--body-color)' }}>{patientName}</strong></span>
+                  {phoneNumber && <span>📞 <strong style={{ color: 'var(--body-color)' }}>{phoneNumber}</strong></span>}
+                </div>
+              )}
               <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
                 <span className={`badge ${results.prediction.referable ? 'danger' : 'success'}`} style={{ background: gradeColor + '22', border: `1px solid ${gradeColor}`, color: gradeColor }}>
-                  Grade {results.prediction.grade} — {results.prediction.label}
+                  {t.grade} {results.prediction.grade} — {t.drLabels[results.prediction.label] || results.prediction.label}
                 </span>
                 {tier && <ConfidenceTierBadge tier={tier} />}
                 <span style={{ color: 'var(--text-muted)' }}>
-                  Confidence: <strong style={{ color: '#e2e8f0' }}>{(results.prediction.confidence * 100).toFixed(1)}%</strong>
+                  {t.confidence}: <strong style={{ color: 'var(--body-color)' }}>{(results.prediction.confidence * 100).toFixed(1)}%</strong>
                 </span>
                 <span style={{ color: 'var(--text-muted)' }}>
-                  Quality: <strong style={{ color: '#e2e8f0' }}>{results.quality?.status}</strong>
+                  {t.quality}: <strong style={{ color: 'var(--body-color)' }}>{results.quality?.status}</strong>
                 </span>
                 <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
                   ⏱ {results.processing_time_ms?.toFixed(0)} ms
@@ -235,32 +378,32 @@ function App() {
               {results.report_url && (
                 <a href={`${API_BASE}${results.report_url}`} target="_blank" rel="noopener noreferrer"
                   style={{ textDecoration:'none' }}>
-                  <button className="btn" style={{ background:'rgba(34,197,94,0.2)', border:'1px solid rgba(34,197,94,0.5)' }}>
-                    📄 Download Report
+                  <button className="btn btn-success">
+                    {t.downloadReport}
                   </button>
                 </a>
               )}
-              <button className="btn" onClick={reset}>New Screening</button>
+              <button className="btn" onClick={reset}>{t.newScreening}</button>
             </div>
           </div>
 
           {/* Referable alert */}
           {results.prediction.referable && (
             <div style={{ marginBottom:'1.5rem', padding:'1rem 1.5rem', background:'rgba(239,68,68,0.12)', border:'1px solid rgba(239,68,68,0.4)', borderRadius:'12px', color:'#fca5a5', fontWeight:600 }}>
-              ⚠ REFERABLE DR DETECTED — Ophthalmologist review is required.
+              {t.referableAlert}
             </div>
           )}
 
           {/* Image grid */}
           <div className="results-grid">
-            <ImagePanel title="Original Fundus Image" src={previewUrl} fallback="No preview" />
+            <ImagePanel title={t.originalImage} src={previewUrl} fallback="No preview" />
             <ImagePanel
-              title="Grad-CAM Explainability"
+              title={t.gradCam}
               src={results.explainability?.gradcam_url ? `${API_BASE}${results.explainability.gradcam_url}?t=${Date.now()}` : null}
-              fallback="Grad-CAM not available (model not loaded)"
+              fallback="Grad-CAM not available"
             />
             <ImagePanel
-              title="Lesion Annotation Map"
+              title={t.lesionMap}
               src={results.explainability?.lesion_overlay_url ? `${API_BASE}${results.explainability.lesion_overlay_url}?t=${Date.now()}` : null}
               fallback="Lesion overlay not available"
             />
@@ -269,9 +412,9 @@ function App() {
           {/* Class probability breakdown */}
           {results.explainability?.class_probabilities && (
             <div className="glass-panel" style={{ marginTop: '1.5rem' }}>
-              <h3 style={{ marginBottom: '1rem' }}>Class Probability Breakdown</h3>
+              <h3 style={{ marginBottom: '1rem' }}>{t.classProbabilities}</h3>
               {Object.entries(results.explainability.class_probabilities).map(([label, prob], i) => (
-                <ConfidenceBar key={label} label={label} value={prob} grade={i} />
+                <ConfidenceBar key={label} label={t.drLabels[label] || label} value={prob} grade={i} />
               ))}
             </div>
           )}
@@ -279,7 +422,7 @@ function App() {
           {/* Lesion analysis */}
           {results.lesions && (
             <div className="glass-panel" style={{ marginTop: '1.5rem' }}>
-              <h3 style={{ marginBottom: '0.5rem' }}>Lesion Analysis</h3>
+              <h3 style={{ marginBottom: '0.5rem' }}>{t.lesionAnalysis}</h3>
               <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginBottom: '1rem' }}>
                 OpenCV heuristic detection — estimates are image-derived (not hardcoded).
               </p>
@@ -289,7 +432,7 @@ function App() {
                   return (
                     <div key={key} style={{ padding: '0.75rem 1rem', background: 'rgba(255,255,255,0.04)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.08)' }}>
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                        {key.replace(/_/g, ' ')}
+                        {t[key] || key.replace(/_/g, ' ')}
                       </div>
                       <div style={{ fontSize: '1.4rem', fontWeight: 700, color: val.detected ? '#f59e0b' : '#22c55e', marginTop: '0.25rem' }}>
                         {val.count ?? 0}
@@ -306,32 +449,25 @@ function App() {
 
           {/* Clinician Review */}
           <div className="glass-panel" style={{ marginTop: '1.5rem' }}>
-            <h3 style={{ marginBottom: '1rem' }}>Clinician Review</h3>
+            <h3 style={{ marginBottom: '1rem' }}>{t.clinicianReview}</h3>
             {reviewSubmitted ? (
-              <div style={{ color: '#22c55e', fontWeight: 600 }}>✓ Review submitted successfully.</div>
+              <div style={{ color: '#22c55e', fontWeight: 600 }}>✓ Review submitted.</div>
             ) : (
               <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'center' }}>
-                <p style={{ color: 'var(--text-muted)', margin: 0 }}>Ophthalmologist decision:</p>
-                <button className="btn" disabled={reviewLoading}
-                  style={{ background: 'rgba(34,197,94,0.2)', border: '1px solid rgba(34,197,94,0.5)' }}
+                <button className="btn btn-success" disabled={reviewLoading}
                   onClick={() => submitReview('CONFIRM')}>
-                  ✓ Confirm
+                  {t.confirm}
                 </button>
-                <button className="btn" disabled={reviewLoading}
-                  style={{ background: 'rgba(239,68,68,0.2)', border: '1px solid rgba(239,68,68,0.5)' }}
+                <button className="btn btn-danger" disabled={reviewLoading}
                   onClick={() => submitReview('REJECT')}>
-                  ✗ Reject
+                  {t.reject}
                 </button>
-                <button className="btn" disabled={reviewLoading}
-                  style={{ background: 'rgba(245,158,11,0.2)', border: '1px solid rgba(245,158,11,0.5)' }}
+                <button className="btn btn-warning" disabled={reviewLoading}
                   onClick={() => submitReview('RECAPTURE')}>
-                  ↺ Recapture
+                  {t.recapture}
                 </button>
               </div>
             )}
-            <p style={{ marginTop: '0.75rem', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-              ⚠ This AI output is for screening support only. Final diagnosis requires ophthalmologist assessment.
-            </p>
           </div>
         </div>
       )}

@@ -29,6 +29,22 @@ class QualityAssessor:
         brightness, contrast = self.calculate_brightness_contrast(image)
         retinal_area = self.calculate_retinal_area(image)
         
+        # --- OOD (Out-Of-Distribution) Detection ---
+        # < 0.08 means nearly all black (invalid/empty image)
+        # > 0.99 means image has no dark circular mask at all (not a fundus photo)
+        if retinal_area < 0.08 or retinal_area > 0.99:
+            return {
+                "quality_score": 0.0,
+                "status": "OOD_REJECTED",
+                "blur_score": float(blur_score),
+                "brightness": float(brightness),
+                "contrast_score": float(contrast),
+                "field_of_view_score": float(retinal_area),
+                "recapture_required": True,
+                "ood_detected": True,
+                "error": "The image does not appear to be a valid retinal fundus image. Fundus images have a distinctive circular field. Please upload a correct retinal scan."
+            }
+            
         # Normalize scores to 0-1 broadly based on empirical values
         normalized_blur = np.clip(blur_score / 1000.0, 0, 1)
         normalized_brightness = 1.0 - abs(brightness - 127.5) / 127.5

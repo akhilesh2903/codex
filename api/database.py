@@ -1,44 +1,91 @@
-from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, Text, DateTime
-from sqlalchemy.orm import declarative_base, sessionmaker
-from datetime import datetime
 import os
+import ssl
+from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./outputs/dr_screening.db")
+MONGO_URI = os.getenv(
+    "MONGO_URI",
+    "mongodb+srv://akhibhat777_db_user:Kt9RtHXlkfGfJ7ls@cluster0.pqxhyok.mongodb.net/dr_screening?appName=Cluster0&retryWrites=true&w=majority"
+)
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+_client = None
 
-Base = declarative_base()
 
-class Patient(Base):
-    __tablename__ = "patients"
-    id = Column(Integer, primary_key=True, index=True)
-    patient_identifier = Column(String, unique=True, index=True)
+def _make_client():
+    """Create MongoClient with TLS options that work on Windows / Python 3.11+."""
+    # First try: standard TLS (correct behaviour on most systems)
+    try:
+        c = MongoClient(
+            MONGO_URI,
+            serverSelectionTimeoutMS=8000,
+            connectTimeoutMS=8000,
+            tls=True,
+        )
+        c.admin.command("ping")
+        print("[DB]    ✅ MongoDB connected (standard TLS).")
+        return c
+    except Exception:
+        pass
 
-class ImageRecord(Base):
-    __tablename__ = "images"
-    id = Column(Integer, primary_key=True, index=True)
-    filename = Column(String, index=True)
-    upload_time = Column(DateTime, default=datetime.utcnow)
+    # Second try: relax cert verification (Windows TLS internal error workaround)
+    try:
+        c = MongoClient(
+            MONGO_URI,
+            serverSelectionTimeoutMS=8000,
+            connectTimeoutMS=8000,
+            tls=True,
+            tlsAllowInvalidCertificates=True,
+        )
+        c.admin.command("ping")
+        print("[DB]    ✅ MongoDB connected (tlsAllowInvalidCertificates).")
+        return c
+    except Exception:
+        pass
 
-class Analysis(Base):
-    __tablename__ = "analyses"
-    id = Column(Integer, primary_key=True, index=True)
-    image_id = Column(String, index=True)
-    quality_score = Column(Float)
-    quality_status = Column(String)
-    dr_grade = Column(Integer)
-    dr_label = Column(String)
-    confidence = Column(Float)
-    referable = Column(Boolean)
-    processing_time_ms = Column(Float)
-    
-class Review(Base):
-    __tablename__ = "reviews"
-    id = Column(Integer, primary_key=True, index=True)
-    analysis_id = Column(Integer)
-    decision = Column(String)
-    comment = Column(Text)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    # Third try: fully disable SSL verification via ssl context
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        c = MongoClient(
+            MONGO_URI,
+            serverSelectionTimeoutMS=8000,
+            connectTimeoutMS=8000,
+            tls=True,
+            tlsAllowInvalidCertificates=True,
+            ssl_cert_reqs=ssl.CERT_NONE,
+        )
+        c.admin.command("ping")
+        print("[DB]    ✅ MongoDB connected (CERT_NONE fallback).")
+        return c
+    except Exception as e:
+        print(f"[DB]    ❌ All connection attempts failed: {e}")
+        return None
 
-Base.metadata.create_all(bind=engine)
+
+try:
+    _client = _make_client()
+except Exception as e:
+    print(f"[ERROR] Failed to create MongoDB client: {e}")
+    _client = None
+
+client = _client
+db = client["dr_screening"] if client else None
+
+
+def verify_connection():
+    """Ping MongoDB to confirm the connection is alive. Returns True/False."""
+    global client, db
+    if client is None:
+        # Try to reconnect
+        client = _make_client()
+        db = client["dr_screening"] if client else None
+    if client is None:
+        return False
+    try:
+        client.admin.command("ping")
+        return True
+    except (ConnectionFailure, ServerSelectionTimeoutError) as e:
+        print(f"[ERROR] MongoDB ping failed: {e}")
+        return False
+
