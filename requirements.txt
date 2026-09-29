@@ -1,14 +1,13 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
 numpy
 pandas
-opencv-python
+opencv-python-headless
 Pillow
 scipy
 scikit-learn
 torch
 torchvision
 albumentations
-matplotlib
-seaborn
 tqdm
 PyYAML
 fastapi
@@ -18,10 +17,7 @@ pymongo
 certifi
 reportlab
 grad-cam
-captum
-mlflow
 python-dotenv
-pytest
 imagehash
 httpx
 python-multipart
