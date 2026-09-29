@@ -229,6 +229,23 @@ function App() {
     setReviewSubmitted(false);
   };
 
+  const handleDownloadReport = async (e) => {
+    e.preventDefault();
+    if (!results?.report_url) return;
+    try {
+      const res = await fetch(`${API_BASE}${results.report_url}`, { headers: { 'ngrok-skip-browser-warning': 'true' } });
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `DR_Report_${results.image_id}.pdf`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch(err) {
+      console.error("Failed to download PDF", err);
+    }
+  };
+
   const grade = results?.prediction?.grade;
   const gradeColor = grade !== undefined ? GRADE_COLORS[grade] : '#60a5fa';
   const tier = results?.prediction?.confidence_tier;
@@ -396,12 +413,9 @@ function App() {
             </div>
             <div style={{ display:'flex', gap:'0.75rem', flexWrap:'wrap' }}>
               {results.report_url && (
-                <a href={`${API_BASE}${results.report_url}`} target="_blank" rel="noopener noreferrer"
-                  style={{ textDecoration:'none' }}>
-                  <button className="btn btn-success">
-                    {t.downloadReport}
-                  </button>
-                </a>
+                <button className="btn btn-success" onClick={handleDownloadReport}>
+                  {t.downloadReport}
+                </button>
               )}
               <button className="btn" onClick={reset}>{t.newScreening}</button>
             </div>
