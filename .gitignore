@@ -4,7 +4,10 @@ __pycache__/
 .pytest_cache/
 data/
 outputs/
-models/
+models/*
+!models/classification/
+models/classification/*
+!models/classification/best_model.pth
 *.pt
 *.pth
 .env
