@@ -56,11 +56,31 @@ function ConfidenceTierBadge({ tier }) {
 
 function ImagePanel({ title, src, fallback }) {
   const [error, setError] = useState(false);
+  const [imgUrl, setImgUrl] = useState(null);
+
+  useEffect(() => {
+    if (!src) return;
+    setError(false);
+    
+    // Fetch using header to quietly bypass Ngrok free-tier warning walls
+    if (src.startsWith('http')) {
+      fetch(src, { headers: { 'ngrok-skip-browser-warning': 'true' } })
+        .then(res => {
+          if (!res.ok) throw new Error();
+          return res.blob();
+        })
+        .then(blob => setImgUrl(URL.createObjectURL(blob)))
+        .catch(() => setError(true));
+    } else {
+      setImgUrl(src); // For local Object URLs like previewUrl
+    }
+  }, [src]);
+
   return (
     <div className="glass-panel result-card">
       <h3>{title}</h3>
-      {src && !error
-        ? <img src={src} alt={title} onError={() => setError(true)} />
+      {imgUrl && !error
+        ? <img src={imgUrl} alt={title} onError={() => setError(true)} />
         : <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'160px', color:'var(--text-muted)', fontSize:'0.85rem', background:'rgba(255,255,255,0.03)', borderRadius:'8px' }}>
             {fallback}
           </div>
