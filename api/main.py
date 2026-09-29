@@ -237,6 +237,12 @@ async def analyze_image(
         return JSONResponse(status_code=400, content={"error": "Could not decode image."})
 
     img_rgb = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
+    # Prevent OOM on 512MB RAM servers by capping max resolution to 1024x1024
+    h, w = img_rgb.shape[:2]
+    if max(h, w) > 1024:
+        scale = 1024 / max(h, w)
+        img_rgb = cv2.resize(img_rgb, (int(w*scale), int(h*scale)))
+        img_cv = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR) # update for original save
     image_id = f"img_{int(time.time() * 1000)}"
 
     # Save original for report
@@ -302,8 +308,9 @@ async def analyze_image(
         xai = get_xai_visualizer()
         if xai is not None:
             try:
-                img_resized = cv2.resize(enhanced, (512, 512))
-                val_transform = get_transforms(image_size=512, mode="val")
+                # Shrink resolution for GradCAM to 256x256 to save memory (prevent OOM during backprop)
+                img_resized = cv2.resize(enhanced, (256, 256))
+                val_transform = get_transforms(image_size=256, mode="val")
                 tensor_for_cam = val_transform(image=enhanced)["image"].unsqueeze(0).to(device)
 
                 gradcam_path = f"outputs/gradcam/{image_id}.png"
@@ -313,6 +320,7 @@ async def analyze_image(
                     target_category=None,
                     output_path=gradcam_path
                 )
+                import gc; gc.collect() # Force cleanup of heavy gradients
                 if visualization is not None:
                     gradcam_url = f"/outputs/gradcam/{image_id}.png"
                     overlay_url = gradcam_url
