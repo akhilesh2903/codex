@@ -31,8 +31,8 @@ class QualityAssessor:
         
         # --- OOD (Out-Of-Distribution) Detection ---
         # < 0.08 means nearly all black (invalid/empty image)
-        # > 0.99 means image has no dark circular mask at all (not a fundus photo)
-        if retinal_area < 0.08 or retinal_area > 0.99:
+        # > 0.90 means image lacks the distinctive dark edge padding of a fundus photo
+        if retinal_area < 0.08 or retinal_area > 0.90:
             return {
                 "quality_score": 0.0,
                 "status": "OOD_REJECTED",
@@ -63,7 +63,7 @@ class QualityAssessor:
             recapture = False
         else:
             status = "UNGRADABLE"
-            recapture = True
+            recapture = False
             
         return {
             "quality_score": float(quality_score),
