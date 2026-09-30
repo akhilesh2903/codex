@@ -17,22 +17,41 @@ class QualityAssessor:
         std_contrast = np.std(gray)
         return mean_brightness, std_contrast
 
-    def calculate_retinal_area(self, image):
+    def calculate_retinal_mask_props(self, image):
         gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
         _, thresh = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
+        
+        # Calculate area
         area = np.sum(thresh == 255)
         total_area = image.shape[0] * image.shape[1]
-        return area / total_area
+        area_ratio = area / total_area
+        
+        # Calculate circularity
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return area_ratio, 0.0
+            
+        # Get largest contour
+        largest_contour = max(contours, key=cv2.contourArea)
+        contour_area = cv2.contourArea(largest_contour)
+        perimeter = cv2.arcLength(largest_contour, True)
+        
+        circularity = 0.0
+        if perimeter > 0:
+            circularity = (4 * np.pi * contour_area) / (perimeter * perimeter)
+            
+        return area_ratio, circularity
 
     def assess(self, image):
         blur_score = self.calculate_blur(image)
         brightness, contrast = self.calculate_brightness_contrast(image)
-        retinal_area = self.calculate_retinal_area(image)
+        retinal_area, circularity = self.calculate_retinal_mask_props(image)
         
         # --- OOD (Out-Of-Distribution) Detection ---
-        # < 0.08 means nearly all black (invalid/empty image)
-        # > 0.90 means image lacks the distinctive dark edge padding of a fundus photo
-        if retinal_area < 0.08 or retinal_area > 0.90:
+        # 1. Area check: < 0.08 (nearly black) or > 0.90 (no dark padding)
+        # 2. Circularity check: A fundus image mask should be roughly circular.
+        #    Perfect circle is 1.0. We reject irregular shapes (< 0.6).
+        if retinal_area < 0.08 or retinal_area > 0.90 or circularity < 0.6:
             return {
                 "quality_score": 0.0,
                 "status": "OOD_REJECTED",
